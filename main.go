@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/url"
@@ -20,7 +21,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/devhub-tools/querydesk-cli/internal/auth"
 	"github.com/devhub-tools/querydesk-cli/internal/config"
@@ -36,7 +39,9 @@ const usage = `QueryDesk CLI: reach your QueryDesk databases from any database c
 
 Usage:
   querydesk login [--server URL]   sign in to QueryDesk in the browser
-  querydesk start                  listen for database clients on localhost
+  querydesk start [--verbose]      listen for database clients on localhost, in the background
+  querydesk stop                   stop listening
+  querydesk status                 whether it's listening, and where
   querydesk databases              list your databases and how to connect to each
   querydesk logout                 sign out
   querydesk version
@@ -47,7 +52,7 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	var err error
@@ -57,7 +62,11 @@ func main() {
 	case "logout":
 		err = logout()
 	case "start":
-		err = start(ctx)
+		err = start(ctx, os.Args[2:])
+	case "stop":
+		err = stopBackground()
+	case "status":
+		err = status()
 	case "databases", "ls":
 		err = databases(ctx)
 	case "version", "--version":
@@ -101,7 +110,7 @@ func login(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("Signed in. Run `querydesk start`, then `querydesk databases` to see how to connect.")
+	fmt.Println("Signed in. Run `querydesk start`: it listens in the background and lists your databases and how to connect to each.")
 	return nil
 }
 
@@ -121,7 +130,15 @@ func logout() error {
 	return nil
 }
 
-func start(ctx context.Context) error {
+func start(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("start", flag.ExitOnError)
+	verbose := flags.Bool("verbose", false, "log each statement and how long QueryDesk took to answer it")
+	foreground := flags.Bool("foreground", false, "stay in this terminal instead of running in the background")
+	_ = flags.Parse(args)
+	if !*foreground {
+		return startBackground(ctx, *verbose)
+	}
+
 	cfg, client, err := setup()
 	if err != nil {
 		return err
@@ -130,6 +147,11 @@ func start(ctx context.Context) error {
 		return err
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
+	if *verbose {
+		client.Trace = func(sql string, status int, firstByte time.Duration) {
+			logger.Printf("%4dms %d %s", firstByte.Milliseconds(), status, oneLine(sql, 120))
+		}
+	}
 	dir := &directory.Directory{Client: client}
 
 	// localhost only: the connection never leaves this machine
@@ -147,9 +169,17 @@ func start(ctx context.Context) error {
 		pg.Close()
 		my.Close()
 	}()
+	// listening: `querydesk start` waits for this, and `querydesk stop` reads it
+	removePid, err := writePid()
+	if err != nil {
+		return err
+	}
+	defer removePid()
 	logger.Printf("signed in to %s", cfg.Server)
 	logger.Printf("Postgres clients: 127.0.0.1:%d, MySQL clients: 127.0.0.1:%d", cfg.PostgresPort, cfg.MySQLPort)
-	logger.Printf("run `querydesk databases` to see how to connect")
+	if err := printDatabases(ctx, cfg, client, os.Stderr); err != nil {
+		logger.Printf("couldn't list your databases: %v", err)
+	}
 
 	errs := make(chan error, 2)
 	go func() {
@@ -169,13 +199,17 @@ func databases(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return printDatabases(ctx, cfg, client, os.Stdout)
+}
+
+func printDatabases(ctx context.Context, cfg *config.Config, client *querydesk.Client, w io.Writer) error {
 	list, err := client.Databases(ctx)
 	if err != nil {
 		return err
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
 
-	out := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	out := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(out, "DATABASE\tENGINE\tCONNECT WITH")
 	for _, db := range list {
 		for _, credential := range db.Credentials {
@@ -233,6 +267,14 @@ func authFor(cfg *config.Config) (*auth.Auth, error) {
 		return nil, err
 	}
 	return &auth.Auth{Server: cfg.Server, Store: auth.Keychain{}, LockPath: filepath.Join(dir, "refresh.lock")}, nil
+}
+
+func oneLine(sql string, max int) string {
+	sql = strings.Join(strings.Fields(sql), " ")
+	if len(sql) > max {
+		return sql[:max] + "…"
+	}
+	return sql
 }
 
 func openBrowser(target string) error {

@@ -91,6 +91,7 @@ func (s *Server) handle(netConn net.Conn) {
 		return
 	}
 	sess.conn = conn
+	defer sess.closeSession()
 	s.sessions.Store(conn.ConnectionID(), sess)
 	defer s.sessions.Delete(conn.ConnectionID())
 	if sess.target != nil {
@@ -142,6 +143,8 @@ type session struct {
 	authed  bool
 	pending string
 	target  *directory.Target
+	// QueryDesk's session for the target, holding one database connection open for it
+	qd *querydesk.Session
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -169,8 +172,16 @@ func (sess *session) use(name string) error {
 	if err != nil {
 		return mysql.NewError(mysql.ER_BAD_DB_ERROR, err.Error())
 	}
-	sess.target = target
+	sess.closeSession()
+	sess.target, sess.qd = target, sess.server.Client.Session(target.Credential.ID)
 	return nil
+}
+
+func (sess *session) closeSession() {
+	if sess.qd != nil {
+		sess.qd.Close()
+		sess.qd = nil
+	}
 }
 
 func (sess *session) ownName() string {
@@ -273,7 +284,7 @@ func (sess *session) run(query string, binary bool) (*mysql.Result, error) {
 	sess.cancel = cancel
 	sess.mu.Unlock()
 
-	result, err := sess.server.Client.Execute(ctx, sess.target.Credential.ID, query)
+	result, err := sess.qd.Execute(ctx, query)
 	if err != nil {
 		err = translate(ctx, err)
 		cancel()

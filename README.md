@@ -28,23 +28,21 @@ querydesk login
 
 Pass `--server https://querydesk.example.com` if you run your own QueryDesk.
 
-Start the listeners and leave the process running:
+Start listening:
 
 ```bash
 querydesk start
 ```
 
-List your databases and the URL to connect to each one:
-
-```bash
-querydesk databases
-```
+It runs in the background and prints your databases with the URL to connect to each one:
 
 ```
 DATABASE       ENGINE    CONNECT WITH
 orders         mysql     mysql://app:…@127.0.0.1:13306/orders
 payments-prod  postgres  postgres://reader:…@127.0.0.1:15432/payments-prod?sslmode=disable
 ```
+
+`querydesk databases` lists them again, `querydesk status` says whether it's running and `querydesk stop` stops it. Its log is `querydesk.log` next to its config. `querydesk start --foreground` stays in the terminal instead, and `--verbose` logs each statement and how long QueryDesk took to answer it.
 
 Paste a URL into your client, or fill in the fields:
 
@@ -66,6 +64,7 @@ A MySQL client can also connect without a database. `SHOW DATABASES` lists the o
 - `SET` changes stay in the CLI and `SHOW` reads them back. They don't reach the database.
 - A query that needs review fails with the id of the query waiting in QueryDesk. Run it again once it's approved.
 - Cancelling a query in your client (Postgres cancel, or MySQL `KILL QUERY`) closes its request to QueryDesk.
+- Each client connection gets a QueryDesk session, which keeps one database connection open between its statements, so only the first pays to connect. QueryDesk ends a session after five minutes without a statement, and the CLI starts a new one when it needs to.
 - Rows stream as QueryDesk reads them, so a large result starts arriving right away.
 - `COPY` to or from the client, `LISTEN`/`NOTIFY` and Postgres binary result formats aren't supported.
 

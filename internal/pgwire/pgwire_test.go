@@ -231,3 +231,35 @@ func TestCancellingStopsTheQueryInQueryDesk(t *testing.T) {
 		t.Fatal("QueryDesk's request wasn't cancelled")
 	}
 }
+
+func TestAConnectionsStatementsShareOneSession(t *testing.T) {
+	qd, url := start(t, map[string]fake.Answer{"SELECT 1": fake.Rows([]querydesk.Column{fake.Col("one", "integer")}, []any{1})})
+	qd.Sessions = true
+	conn := connect(t, url, pgx.QueryExecModeSimpleProtocol)
+	ctx := context.Background()
+
+	for range 2 {
+		if _, err := conn.Exec(ctx, "SELECT 1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// QueryDesk ended it: a new session runs the statement, once
+	qd.End = true
+	if _, err := conn.Exec(ctx, "SELECT 1"); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close(ctx)
+
+	// the startup's version query has no session; the statements do
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ranOn, opened, closed := qd.Seen()
+		if len(closed) == 1 || time.Now().After(deadline) {
+			if fmt.Sprint(ranOn) != "[ ses_1 ses_1 ses_2]" || fmt.Sprint(opened) != "[ses_1 ses_2]" || fmt.Sprint(closed) != "[ses_2]" {
+				t.Fatalf("ran on %q, opened %q, closed %q", ranOn, opened, closed)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

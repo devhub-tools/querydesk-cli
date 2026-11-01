@@ -4,6 +4,7 @@ package fake
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,8 +28,15 @@ type QueryDesk struct {
 	Databases []querydesk.Database
 	Answers   map[string]Answer
 
+	// Sessions turns on the sessions API; End makes the next statement find its session gone
+	Sessions bool
+	End      bool
+
 	mu        sync.Mutex
 	Ran       []string
+	RanOn     []string
+	Opened    []string
+	Closed    []string
 	Cancelled chan string
 }
 
@@ -52,14 +60,36 @@ func (qd *QueryDesk) serve(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/api/v1/querydesk/credentials":
 		json.NewEncoder(w).Encode(map[string]any{"databases": qd.Databases})
+	case "/api/v1/querydesk/sessions":
+		if !qd.Sessions {
+			http.NotFound(w, r)
+			return
+		}
+		qd.mu.Lock()
+		id := fmt.Sprintf("ses_%d", len(qd.Opened)+1)
+		qd.Opened = append(qd.Opened, id)
+		qd.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{"session_id": id})
 	case "/api/v1/querydesk/statements":
 		var body struct {
-			SQL string `json:"sql"`
+			SQL       string `json:"sql"`
+			SessionID string `json:"session_id"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 		qd.mu.Lock()
-		qd.Ran = append(qd.Ran, body.SQL)
+		end := qd.End && body.SessionID != ""
+		qd.End = qd.End && !end
+		if !end {
+			qd.Ran = append(qd.Ran, body.SQL)
+			qd.RanOn = append(qd.RanOn, body.SessionID)
+		}
 		qd.mu.Unlock()
+		if end {
+			w.WriteHeader(http.StatusGone)
+			json.NewEncoder(w).Encode(map[string]any{"error": "This session has ended. Start a new one."})
+			return
+		}
 
 		answer, ok := qd.Answers[strings.TrimSpace(body.SQL)]
 		if !ok {
@@ -82,8 +112,22 @@ func (qd *QueryDesk) serve(w http.ResponseWriter, r *http.Request) {
 			qd.Cancelled <- body.SQL
 		}
 	default:
+		if strings.HasPrefix(r.URL.Path, "/api/v1/querydesk/sessions/") && r.Method == http.MethodDelete {
+			qd.mu.Lock()
+			qd.Closed = append(qd.Closed, strings.TrimPrefix(r.URL.Path, "/api/v1/querydesk/sessions/"))
+			qd.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		http.NotFound(w, r)
 	}
+}
+
+// Seen is what the fake recorded, read safely while a client may still be talking to it.
+func (qd *QueryDesk) Seen() (ranOn, opened, closed []string) {
+	qd.mu.Lock()
+	defer qd.mu.Unlock()
+	return append([]string(nil), qd.RanOn...), append([]string(nil), qd.Opened...), append([]string(nil), qd.Closed...)
 }
 
 // Rows is a streamed result: its columns, its rows in one chunk, then done.

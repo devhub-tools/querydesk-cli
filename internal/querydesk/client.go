@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,7 +27,17 @@ type Client struct {
 	Server string
 	Tokens Tokens
 	HTTP   *http.Client
+	// Trace, when set, hears of each statement: how long QueryDesk took to start answering
+	Trace func(sql string, status int, firstByte time.Duration)
 }
+
+// one client for every request, so each statement reuses an open HTTP/2 connection instead of
+// paying for a new TCP and TLS handshake
+var shared = func() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 10 * time.Minute
+	return &http.Client{Transport: transport}
+}()
 
 type Database struct {
 	ID          string       `json:"id"`
@@ -100,13 +111,22 @@ func (c *Client) Databases(ctx context.Context) ([]Database, error) {
 	return body.Databases, nil
 }
 
-// Execute runs sql with the credential. Cancelling ctx, or closing the result, stops the
-// query in QueryDesk.
+// Execute runs sql with the credential, on a connection of its own. Cancelling ctx, or
+// closing the result, stops the query in QueryDesk.
 func (c *Client) Execute(ctx context.Context, credentialID, sql string) (*Result, error) {
-	payload, err := json.Marshal(map[string]any{"credential_id": credentialID, "sql": sql, "max_rows": 0})
+	return c.execute(ctx, credentialID, "", sql)
+}
+
+func (c *Client) execute(ctx context.Context, credentialID, sessionID, sql string) (*Result, error) {
+	body := map[string]any{"credential_id": credentialID, "sql": sql, "max_rows": 0}
+	if sessionID != "" {
+		body["session_id"] = sessionID
+	}
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
+	started := time.Now()
 	resp, err := c.do(ctx, func(token string) (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Server+"/api/v1/querydesk/statements", bytes.NewReader(payload))
 		if err != nil {
@@ -120,6 +140,9 @@ func (c *Client) Execute(ctx context.Context, credentialID, sql string) (*Result
 	})
 	if err != nil {
 		return nil, err
+	}
+	if c.Trace != nil {
+		c.Trace(sql, resp.StatusCode, time.Since(started))
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
@@ -268,7 +291,7 @@ func (c *Client) http() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return &http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, ResponseHeaderTimeout: 10 * time.Minute}}
+	return shared
 }
 
 func errorFrom(resp *http.Response) error {
@@ -281,4 +304,101 @@ func errorFrom(resp *http.Response) error {
 		body.Error = fmt.Sprintf("QueryDesk answered %d", resp.StatusCode)
 	}
 	return &Error{Status: resp.StatusCode, Message: body.Error, QueryID: body.QueryID}
+}
+
+// Session runs a client connection's statements on one database connection QueryDesk holds
+// open, so each skips connecting to the database. It opens with its first statement, starts
+// over when QueryDesk has ended it, and runs without one on a QueryDesk that has no sessions.
+type Session struct {
+	client       *Client
+	credentialID string
+
+	mu          sync.Mutex
+	id          string
+	unsupported bool
+}
+
+func (c *Client) Session(credentialID string) *Session {
+	return &Session{client: c, credentialID: credentialID}
+}
+
+// Execute runs sql on the session's connection; see Client.Execute.
+func (s *Session) Execute(ctx context.Context, sql string) (*Result, error) {
+	id, err := s.open(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.client.execute(ctx, s.credentialID, id, sql)
+	var qd *Error
+	// ended (idle, or QueryDesk restarted): nothing ran, so a new session runs it
+	if errors.As(err, &qd) && qd.Status == http.StatusGone {
+		if id, err = s.open(ctx, true); err != nil {
+			return nil, err
+		}
+		return s.client.execute(ctx, s.credentialID, id, sql)
+	}
+	return result, err
+}
+
+// Close ends the session, closing its database connection.
+func (s *Session) Close() {
+	s.mu.Lock()
+	id := s.id
+	s.id = ""
+	s.mu.Unlock()
+	if id == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := s.client.do(ctx, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, s.client.Server+"/api/v1/querydesk/sessions/"+id, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("authorization", "Bearer "+token)
+		return req, nil
+	})
+	if err == nil {
+		resp.Body.Close()
+	}
+}
+
+func (s *Session) open(ctx context.Context, renew bool) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.unsupported {
+		return "", nil
+	}
+	if s.id != "" && !renew {
+		return s.id, nil
+	}
+	payload, _ := json.Marshal(map[string]string{"credential_id": s.credentialID})
+	resp, err := s.client.do(ctx, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.client.Server+"/api/v1/querydesk/sessions", bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("authorization", "Bearer "+token)
+		req.Header.Set("content-type", "application/json")
+		req.Header.Set("accept", "application/json")
+		return req, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		// a QueryDesk from before sessions; a credential that's gone fails its statement instead
+		s.unsupported, s.id = true, ""
+		return "", nil
+	}
+	var opened struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&opened); err != nil {
+		return "", err
+	}
+	s.id = opened.SessionID
+	return s.id, nil
 }

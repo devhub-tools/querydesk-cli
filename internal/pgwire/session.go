@@ -25,8 +25,10 @@ type session struct {
 	conn    net.Conn
 	user    string
 	target  *directory.Target
-	pid     uint32
-	secret  []byte
+	// QueryDesk's session for this connection, holding one database connection open for it
+	qd     *querydesk.Session
+	pid    uint32
+	secret []byte
 
 	// SET values, answered by SHOW: each statement runs on its own in QueryDesk, so they can't reach the database
 	settings   map[string]string
@@ -249,7 +251,7 @@ func (sess *session) run(p *portal) error {
 	sess.cancel = cancel
 	sess.mu.Unlock()
 
-	result, err := sess.server.Client.Execute(ctx, sess.target.Credential.ID, p.sql)
+	result, err := sess.qd.Execute(ctx, p.sql)
 	if err != nil {
 		err = sess.translate(ctx, err)
 		cancel()

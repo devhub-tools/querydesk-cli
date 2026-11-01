@@ -8,6 +8,7 @@ require (
 	github.com/gofrs/flock v0.13.1
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/zalando/go-keyring v0.2.8
+	golang.org/x/sys v0.47.0
 )
 
 require (
@@ -27,7 +28,6 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )

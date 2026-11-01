@@ -71,6 +71,8 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 	sess.target = target
+	sess.qd = s.Client.Session(target.Credential.ID)
+	defer sess.qd.Close()
 
 	sess.pid, sess.secret = s.register(sess)
 	defer s.sessions.Delete(sess.pid)

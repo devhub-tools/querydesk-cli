@@ -218,3 +218,29 @@ func TestKillQueryStopsTheQueryInQueryDesk(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestAConnectionsStatementsShareOneSession(t *testing.T) {
+	qd, addr := start(t, map[string]fake.Answer{"SELECT 1": fake.Rows([]querydesk.Column{fake.Col("one", "integer")}, []any{1})})
+	qd.Sessions = true
+	db := open(t, fmt.Sprintf("app:local@tcp(%s)/orders", addr))
+	db.SetMaxOpenConns(1)
+
+	for range 2 {
+		if _, err := db.Exec("SELECT 1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ranOn, opened, closed := qd.Seen()
+		if len(closed) == 1 || time.Now().After(deadline) {
+			if fmt.Sprint(ranOn) != "[ses_1 ses_1]" || fmt.Sprint(opened) != "[ses_1]" || fmt.Sprint(closed) != "[ses_1]" {
+				t.Fatalf("ran on %q, opened %q, closed %q", ranOn, opened, closed)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
