@@ -73,7 +73,11 @@ Set `QUERYDESK_TOKEN` to use a QueryDesk access token instead of the keychain si
 
 ## Release
 
-Push a `v0.1.0` tag. The Release workflow builds every platform with GoReleaser, publishes a GitHub release and updates the cask in [devhub-tools/homebrew-tap](https://github.com/devhub-tools/homebrew-tap). A tag with a suffix (`v0.1.0-beta`) is a prerelease and leaves the tap alone. The workflow needs a `HOMEBREW_TAP_DEPLOY_KEY` secret, the private half of a deploy key with write access on the tap.
+Push a `v0.1.0` tag. The Release workflow builds every platform with GoReleaser and publishes a GitHub release. A tag with a suffix (`v0.1.0-beta`) is a prerelease. Then run the QueryDesk CLI workflow in [devhub-tools/homebrew-tap](https://github.com/devhub-tools/homebrew-tap), which points the cask at the latest release:
+
+```bash
+gh workflow run querydesk.yml --repo devhub-tools/homebrew-tap
+```
 
 ## License
 

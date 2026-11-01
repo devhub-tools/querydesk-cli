@@ -25,5 +25,3 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          # the private half of a write deploy key on devhub-tools/homebrew-tap
-          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
