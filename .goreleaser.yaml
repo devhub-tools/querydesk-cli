@@ -1,0 +1,50 @@
+version: 2
+project_name: querydesk
+builds:
+  - env:
+      # a static binary, so it runs wherever it's copied
+      - CGO_ENABLED=0
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    binary: querydesk
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_SHA256SUMS"
+release:
+  prerelease: auto
+changelog:
+  use: github-native
+# brew install devhub-tools/tap/querydesk; each release updates the cask in the tap
+homebrew_casks:
+  - name: querydesk
+    repository:
+      owner: devhub-tools
+      name: homebrew-tap
+      # a deploy key with write access on the tap, so no personal token is involved
+      git:
+        url: git@github.com:devhub-tools/homebrew-tap.git
+        private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY }}"
+    directory: Casks
+    homepage: https://github.com/devhub-tools/querydesk-cli
+    description: "Connect Postgres and MySQL clients to QueryDesk over HTTPS"
+    license: MIT
+    binaries: [querydesk]
+    # a prerelease stays out of the tap
+    skip_upload: auto
+    hooks:
+      post:
+        # the binary is unsigned: brew quarantines what it downloads, which Gatekeeper then blocks
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/querydesk"]
+          end
