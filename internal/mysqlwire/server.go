@@ -32,7 +32,7 @@ import (
 )
 
 // Adapters are the QueryDesk databases a MySQL client can reach.
-var Adapters = []string{"mysql", "tidb"}
+var Adapters = []string{"mysql", "mariadb", "tidb", "oceanbase", "starrocks", "doris"}
 
 type Server struct {
 	Client    *querydesk.Client

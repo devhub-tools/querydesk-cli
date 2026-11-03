@@ -22,8 +22,6 @@ jobs:
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
-          # versions follow the app's, with a fourth part for a client-only release (v2.46.1.1),
-          # which isn't semver: skipping validation lets goreleaser take it
-          args: release --clean --skip=validate
+          args: release --clean
         env:
           GITHUB_TOKEN: ${{ github.token }}

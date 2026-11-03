@@ -49,7 +49,7 @@ Paste a URL into your client, or fill in the fields:
 | Field    | Value                                                               |
 | -------- | ------------------------------------------------------------------- |
 | Host     | `127.0.0.1`                                                         |
-| Port     | `15432` for Postgres and CockroachDB, `13306` for MySQL and TiDB    |
+| Port     | `15432` for the Postgres family (PostgreSQL, CockroachDB, TimescaleDB, AlloyDB, Redshift), `13306` for the MySQL family (MySQL, MariaDB, TiDB, OceanBase, StarRocks, Doris) |
 | Database | the database's name in QueryDesk                                    |
 | User     | the QueryDesk credential's username, or anything for the default one |
 | Password | the local password that `querydesk databases` shows                 |

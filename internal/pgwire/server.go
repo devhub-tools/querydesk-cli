@@ -22,7 +22,7 @@ import (
 )
 
 // Adapters are the QueryDesk databases a Postgres client can reach.
-var Adapters = []string{"postgres", "cockroachdb"}
+var Adapters = []string{"postgres", "cockroachdb", "timescaledb", "alloydb", "redshift"}
 
 type Server struct {
 	Client    *querydesk.Client
